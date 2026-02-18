@@ -1,0 +1,20 @@
+
+
+
+
+* clisp notes
+
+** Memory
+
+*** Stack
+
+    - The stack is defined in spvw.d:
+      #+BEGIN_SRC d
+      modexp gcv_object_t* STACK;
+      #+END_SRC 
+      
+    - There is explicitly space for multiple values stored in:
+      #+BEGIN_SRC d
+      modexp uintC mv_count;
+      #+END_SRC 
+    
