@@ -94,26 +94,25 @@
   "check_STACK -- tests the LISP-Stack for overflow"
   )
 
-(defun get_space_on_stack (n)
+(defun get-space-on-stack (n)
   "get_space_on_STACK(n); tests, whether there are still D0.L Bytes free
 on the LISP-Stack"
-  (error "get_space_on_stack not implemented"))
+  (declare (ignore n))
+  (error "get-space-on-stack not implemented"))
 
 
-#define VALUES1(A)                               \
-  do { value1 = (A); mv_count = 1; } while (0)
+;; #define VALUES1(A)                               \
+;;   do { value1 = (A); mv_count = 1; } while (0)
 
 
 
 ;; Various things to consider when interpreting byte code
 ;; - Triggering garbage collection.
 ;; - checking stack
-;; - debugging bytecode (e.g. length, codeptr)
-;; - using: byteptr
-;; - tracing
+;; - debugging bytecode (
 
 
-(defun interpret-bytecode (closureptr codeptr byteptr-in)
+(defun interpret-bytecode (closureptr code)
   "local /*maygc*/ Values interpret_bytecode_ (object closure_in, Sbvector codeptr,
                                                const uintB* byteptr_in)"
   ;; Situate closure in STACK, below the arguments. But why note used closureptr
@@ -166,27 +165,19 @@ on the LISP-Stack"
 	     (b-operand ()
                (prog1 (aref codevec byteptr)
 		 (incf byteptr)))
-	     ;; Macro U_operand(where);
-	     ;; moves the next Operand (an Unsigned Integer)
-	     ;; to (uintL)where or (uintC)where
-	     ;; and advances the Bytecodepointer. */
-	     (u_operand ()
-               (let ((where = (prog1 (aref codevec byteptr)
-				(incf byteptr))))
-		 (when (ldb (byte 3 0) where))))
 	     ;; Macro S_operand(where);
 	     ;; moves the next Operand (a Signed Integer)
 	     ;; to (uintL)where and advances the bytecodepointer.
 	     (s_operand (where)
-               (let ((where = (prog1 (aref codevec byteptr)
-				(incf byteptr))))
+               (let ((where (prog1 (aref codevec byteptr)
+			      (incf byteptr))))
 		 (when (ldb (byte 3 0) where))))
 	     ;; Macro S_operand_ignore();
 	     ;; skips the next Operand (a Signed Integer)
 	     ;; and advances the bytecodepointer. */
 	     (s_operand_ignore ()
-               (let ((where = (prog1 (aref codevec byteptr)
-				(incf byteptr))))
+               (let ((where (prog1 (aref codevec byteptr)
+			      (incf byteptr))))
 		 (when (ldb (byte 3 0) where))))
 	     ;; store context-information:
 	     ;; If sth. is called, that can trigger a GC, this must be framed within
@@ -201,8 +192,30 @@ on the LISP-Stack"
 		 (setf byteptr (+ codeptr  index)))))
       ;; Also l-operand
       (tagbody
+	 ;; targets which must be handled: next-byte
+	 ;;  - block_return (special target used in cod_block_open)
+	 ;;  - catch_return (special target used in cod_catch_open)
+	 ;;  - code_nil (special 'switch/case' target)
+	 ;;  - code_t (special 'switch/case' target)
+	 ;;  - error_STACK_putt
+	 ;;  - error_byteptr
+	 ;;  - error_toomany_values
+	 ;;  - finished
+	 ;;  - jmp (special 'switch/case' target)
+	 ;;  - jmp0 (target that flows through to CASE cod_jmp: jmp)
+	 ;;  - next_byte
+	 ;;  - notjmp (target that flows through to CASE cod_jmpifnot:)
+	 ;;  - nv_to_stack_end (special target used in cod_nv_to_stack)
+	 ;;  - nv_to_stack_fill (special target used in cod_nv_to_stack)
+	 ;;  - store (special 'switch/case' target)
+	 ;;  - svref_not_a_svector (special target used in cod_svref & cod_svset)
+	 ;;  - svref_not_an_index (special target used in cod_svref & cod_svset)
+	 ;;  - tagbody_go (special target used in cod_tagbody_open)
+	 ;;  - throw_save (special target used in cod_uwp_open)
+	 ;;  - unlist_unbound (special target used in cod_unlist)
+	 ;;  - unliststar_unbound (special target used in cod_unliststar)
        next-byte
-	 (case (prog1 (aref codevec byteptr) (incf byteptr))
+	 (etypecase (byte-code-read-next)
 	   ;; ------------------- (1) Constants -----------------------
 	   ((cod-nil code-nil) ;(NIL)
 	    (values1 vm-nil)
@@ -221,15 +234,16 @@ on the LISP-Stack"
 	    (push-stack vm-t)
 	    (go next-byte))
 	   (cod-const ;(const n)
-	    (values1 (aref (clos-consts (thecclosure closure)) (u-operand)))
+	    (values1 (aref (clos-consts (the-cclosure closure)) (u-operand)))
 	    (go next-byte))
 	   (cod-const-push ; (const&push n)
-	    (pushstack (aref (clos-consts (thecclosure closure)) (u-operand)))
-	    (go next-byte)))))))
+	    (pushstack (aref (clos-consts (the-cclosure closure)) (u-operand)))
+	    (go next-byte)))
+       finished))))
 
 
-   ;; var JMPBUF_on_SP(name);  allocates a sp_jmp_buf in SP.
-   ;; FREE_JMPBUF_on_SP();  deallocates it.
-   ;; finish_entry_frame_1(frametype,returner,reentry_statement);  is like
-   ;; finish_entry_frame(frametype,returner,,reentry_statement);  but
-   ;; also private_SP is saved. */
+;; var JMPBUF_on_SP(name);  allocates a sp_jmp_buf in SP.
+;; FREE_JMPBUF_on_SP();  deallocates it.
+;; finish_entry_frame_1(frametype,returner,reentry_statement);  is like
+;; finish_entry_frame(frametype,returner,,reentry_statement);  but
+;; also private_SP is saved. */

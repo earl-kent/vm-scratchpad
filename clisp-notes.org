@@ -16,5 +16,11 @@
     - There is explicitly space for multiple values stored in:
       #+BEGIN_SRC d
       modexp uintC mv_count;
-      #+END_SRC 
-    
+      #+END_SRC
+
+    - Note the convention for dynamic arrays
+      #+BEGIN_SRC d
+	    #define DYNAMIC_ARRAY(arrayvar,arrayeltype,arraysize)  \
+		    arrayeltype arrayvar[arraysize]
+      #+END_SRC
+

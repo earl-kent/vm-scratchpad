@@ -1,5 +1,9 @@
 
 
+(in-package vm-scratchpad)
+
+
+
 (defvar *value1*)
 (defvar *mv-count*)
 
@@ -28,9 +32,12 @@
   (let ((bytes (etypecase byte-code-bytes
 		 (byte-code-vector
 		  (coerce (byte-code-bytes byte-code-bytes) 'list))
-	       (list byte-code-bytes))))
+		 (list byte-code-bytes)))
+	(index 0))
     (dolist (byte bytes)
-      (format t "~3,'0D   #b~8,'0B~%" byte byte))))
+      (format t "~2,D   ~3,'0D   #b~8,'0B~%" index byte byte)
+      (incf index))))
+
 
 (defun byte-code-collect (byte-code-vector)
   (setf (byte-code-ptr byte-code-vector) 0)
@@ -68,10 +75,21 @@
 		       :element-type '(unsigned-byte 8)
 		       :initial-contents bytes)))))
 
+
+;; Assembles next operand (usigned-byte 16) from the next one or two
+;; (usigned-byte 8)s in the byte stream.
 (defun u-operand (byte-code-voctor)
-  (let ((where
+  (let ((b (byte-code-read-next byte-code-voctor)))
+    (if (ldb-test (byte 1 7) b)
+	(progn
+	  (mask-field (byte 7 0) b)
+	  (dpb (byte-code-read-next byte-code-voctor) (byte 8 0)
+	       (ash (mask-field (byte 7 0) b) 8 )))
+	b)))
 
-
+(defun u-operand-test ()
+  (setf (byte-code-ptr *the-byte-code-vector*) 14)
+  (format t "~16,'0B~%" (u-operand *the-byte-code-vector*)))
 
 ;; Macro U_operand(where);
 ;; moves the next Operand (an Unsigned Integer)
@@ -84,13 +102,6 @@
 ;;         where = where << 8;                            \
 ;;         where |= *byteptr++;          /* and read next Byte */ \
 ;;   }   }
-
-
-
-
-
-
-
 
 
 ;; Note this is slightly different from the clisp dotimesw which takes

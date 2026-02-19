@@ -1,6 +1,6 @@
 
 
 (defpackage vm-scratchpad
-  (:use :common-lisp)
+  (:use :common-lisp :fiveam)
   (:shadow)
   (:export))
