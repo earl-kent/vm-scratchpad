@@ -3,8 +3,8 @@
 (in-package vm-scratchpad)
 
 
-(defvar *memory*)
-(defvar *stack-pointer*) ;; Point one past the last value.
+(defvar *stack*) ;; lisp objects
+(defvar *sp*)    ;; program pointer
 
 (defconstant +default-mem-size+ 1024)
 (defconstant +stack-start+ 128)
