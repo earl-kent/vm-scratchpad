@@ -99,7 +99,154 @@
 
 
 
-(defun c-PLUS ()
+(defun my-c-GLOBAL-FUNCTION-CALL (fun) ; fun is a Symbol or (SETF symbol)
+  (test-list *form* 1)
+  (note-function-used fun (cdr *form*) nil)
+  ;; eek
+  ;; (when *compiling-from-file* ; called by COMPILE-FILE?
+  ;;   ;; take note of PROCLAIM-declarations:
+  ;;   (when (and (eq fun 'PROCLAIM) (= (length *form*) 2))
+  ;;     (let ((h (second *form*)))
+  ;;       (when (c-constantp h)
+  ;;         (c-form
+  ;;          `(eval-when-compile (c-PROCLAIM ',(c-constant-value h)))))))
+  ;;   ;; take note of module requirements:
+  ;;   (when (and (memq fun '(PROVIDE REQUIRE))
+  ;;              (every #'c-constantp (rest *form*)))
+  ;;     (c-form
+  ;;       `(eval-when-compile
+  ;;          (,(case fun
+  ;;              (PROVIDE 'c-PROVIDE)  ; c-PROVIDE instead of PROVIDE
+  ;;              (REQUIRE 'c-REQUIRE)) ; c-REQUIRE instead of REQUIRE
+  ;;           ,@(mapcar           ; quote arguments
+  ;;              #'(lambda (x) (list 'QUOTE (c-constant-value x)))
+  ;;              (rest *form*))))))
+  ;;   ;; take note of package-requirements:
+  ;;   (when (and *package-tasks-treat-specially*
+  ;;              (memq fun '(MAKE-PACKAGE SYSTEM::%IN-PACKAGE
+  ;;                          SHADOW SHADOWING-IMPORT EXPORT UNEXPORT
+  ;;                          USE-PACKAGE UNUSE-PACKAGE IMPORT))
+  ;;              (every #'c-constantp (rest *form*)))
+  ;;     (push
+  ;;       `(,fun
+  ;;         ,@(mapcar
+  ;;             ;; Quote the arguments, but only when necessary, because
+  ;;             ;; ANSI-CL IN-PACKAGE wants unquoted arguments.
+  ;;             #'(lambda (x)
+  ;;                 (let ((v (c-constant-value x)))
+  ;;                   (if (or (numberp v) (characterp v) (arrayp v) (keywordp v))
+  ;;                     v
+  ;;                     (list 'QUOTE v))))
+  ;;             (rest *form*)))
+  ;;       *package-tasks*)))
+  (let* ((args (cdr *form*))    ; arguments
+         (n (length args)))     ; number of arguments
+    (if (or (not (fboundp fun)) (declared-notinline fun))
+      ;; the function arguments will not be checked
+      (c-NORMAL-FUNCTION-CALL fun)
+      (multiple-value-bind (name req opt rest-p key-p keylist allow-p check)
+          (function-signature fun t)
+        (setq check (and name (test-argument-syntax args nil fun req opt rest-p
+                                                    key-p keylist allow-p)))
+        (if (and name (equal fun name)) ; function is valid
+          (case fun
+            ((CAR CDR FIRST REST NOT NULL CONS SVREF VALUES
+              CAAR CADR CDAR CDDR CAAAR CAADR CADAR CADDR CDAAR CDADR
+              CDDAR CDDDR SECOND THIRD FOURTH CAAAAR CAAADR CAADAR CAADDR
+              CADAAR CADADR CADDAR CADDDR CDAAAR CDAADR CDADAR CDADDR
+              CDDAAR CDDADR CDDDAR CDDDDR ATOM CONSP SYS::%UNBOUND
+              VALUES-LIST SYS::%SVSTORE EQ SYMBOL-FUNCTION LIST LIST*)
+             ;; these here have keylist=NIL, allow-p=NIL and
+             ;; (which is not used) opt=0.
+             (if check ; (and (<= req n) (or rest-p (<= n (+ req opt))))
+               ;; we make the call INLINE.
+               (let ((sideeffects ; side-effect-class of the function-execution
+                       (if (>= (declared-optimize 'SAFETY) 3)
+                         *seclass-dirty* ; see comment in F-SIDE-EFFECT
+                         (function-side-effect fun)))) ; no need for a check
+                 (cond ((and (null *for-value*)
+                             (null (seclass-modifies sideeffects)))
+                        ;; don't have to call the function,
+                        ;; only evaluate the arguments
+                        (c-form `(PROGN ,@args)))
+                       ((and (seclass-foldable-p sideeffects)
+                             (every #'c-constantp args))
+                        ;; call the function at compile time
+                        (let ((*stackz* *stackz*))
+                          (multiple-value-bind (seclass codelist)
+                              (collect-args sideeffects args)
+                            (return-if-foldable seclass fun codelist
+                                                c-GLOBAL-FUNCTION-CALL)
+                            (compiler-error 'c-GLOBAL-FUNCTION-CALL
+                                            (list fun args seclass codelist)))))
+                       ((and (eq fun 'VALUES) (eq *for-value* 'ONE))
+                        (if (= n 0) (c-NIL) (c-form `(PROG1 ,@args))))
+                       (t (let ((*stackz* *stackz*))
+			    (multiple-value-bind (seclass codelist)
+			        (collect-args sideeffects args)
+                              ;; evaluate the arguments and push all to the
+                              ;; stack except for the last (because the last
+                              ;; one is expected in A0):
+			      (pop codelist) (pop *stackz*)
+                              (setq codelist
+                                    (nreconc codelist
+                                             (function-code-list fun n)))
+                              (make-anode
+                               :type `(PRIMOP ,fun)
+                               :sub-anodes (remove-if-not #'anode-p codelist)
+                               :seclass seclass
+                               :code codelist))))))
+               ;; check failed (wrong argument count) => not INLINE:
+               (c-NORMAL-FUNCTION-CALL fun)))
+            (t ; is the SUBR fun contained in the FUNTAB?
+             (let ((index (gethash fun function-codes)))
+               (case fun
+                 ;; accept &KEY and an even number of &OPTIONAL
+                 ((PARSE-NAMESTRING MERGE-PATHNAMES READ-FROM-STRING)
+                  ;; (#:ARG0 &OPTIONAL #:ARG1 #:ARG2 &KEY ...)
+                  ;; it just so happens that a keyword is a bad
+                  ;; (or, in case of READ-FROM-STRING, an unusual)
+                  ;; second (1st optional) argument for these functions,
+                  ;; thus this keywordp test is good enough
+                  (when (keywordp (second args))
+                    (c-style-warn (TEXT "Apparently passing &KEY arguments without &OPTIONAL arguments in ~S") *form*))))
+               (if index
+                 (case check
+                   ((NO-KEYS STATIC-KEYS)
+                    ;; correct syntax, stack layout is known
+                    ;; at compile time ==> INLINE
+                    (c-DIRECT-FUNCTION-CALL
+                      args nil fun req opt rest-p keylist keylist
+                      t ; it is a SUBR
+                      (let ((call-code ; call with help from the FUNTAB:
+                              (cons
+                                (if (not rest-p)
+                                  (CALLS-code index)
+                                  `(CALLSR ,(max 0 (- n req opt)) ; When n<req+opt another (PUSH-UNBOUND ...) still has to come
+                                           ,(- index funtabR-index)))
+                                (case fun
+                                  (;; functions, that do not return:
+                                   (;; control.d:
+                                    SYS::DRIVER SYS::UNWIND-TO-DRIVER
+                                    ;; debug.d:
+                                    ;; SYS::REDO-EVAL-FRAME
+                                    ;; SYS::RETURN-FROM-EVAL-FRAME
+                                    ;; error.d:
+                                    ERROR SYSTEM::ERROR-OF-TYPE
+                                    INVOKE-DEBUGGER)
+                                   '((BARRIER)))
+                                  (t '())))))
+                        #'(lambda () call-code))))
+                   (t (c-NORMAL-FUNCTION-CALL fun)))
+                 ;; not a SUBR
+                 (let ((inline-lambdabody (inline-lambdabody fun)))
+                   (if (inline-callable-lambdabody-p inline-lambdabody n)
+                     ;; inline call of the global function is possible
+                     (c-FUNCALL-INLINE fun args nil inline-lambdabody nil)
+                     (c-NORMAL-FUNCTION-CALL fun)))))))
+          (c-NORMAL-FUNCTION-CALL fun))))))
+
+(defun my-c-PLUS ()
   (test-list *form* 1)
   (multiple-value-bind (const-sum other-parts)
       (c-collect-numeric-constants (cdr *form*))
@@ -401,3 +548,80 @@
 (progn
   (test-c-lambdabody)
   nil)
+
+
+;; (sys::assemble-LAP (mapcar #'rest *))
+;; (sys::disassemble-LAP byte-list const-list)
+
+
+;; Tests -- Note, these only work in clisp.
+
+
+(defvar *current-lambda-expression*)
+(defvar *current-lambda-name*)
+;; Note the difference between codevec and lap-assembly. The codevec
+;; is actually the encoding of the full closure object.
+(defvar *current-codevec*)
+(defvar *current-lap-assembly*)
+(defvar *current-disassembly*)
+
+(defun my-plus-1 (x y)
+  (declare (compile))
+  (+ x y))
+
+(defun my-empty-function ()
+  (declare (compile)))
+
+
+(function-lambda-expression #'my-plus-1)
+
+(defun str (&rest rest)
+  (apply #'concatenate 'string rest))
+
+(defun generate-artifacts (expression)
+  (multiple-value-bind (lambda-expression lambdap name)
+      (function-lambda-expression expression)
+    (declare (ignore lambdap))
+    (setf *current-lambda-expression* lambda-expression)
+    (setf *current-lambda-name* name)
+    (setf *current-codevec* (sys::closure-codevec expression))
+    (multiple-value-bind (req-num opt-num rest-p key-p keyword-list
+			  allow-other-keys-p byte-list const-list)
+	(sys::signature expression)
+      (declare (ignore req-num opt-num rest-p key-p keyword-list
+			  allow-other-keys-p))
+      (setf *current-disassembly* (sys::disassemble-LAP byte-list const-list))
+      (setf *current-lap-assembly*
+	    (sys::assemble-LAP
+	     (mapcar #'rest *current-disassembly*)))
+      (format t (str "lambda-expression=~s name=~s~% *current-codevec*=~s~%"
+		     "*current-disassembly*=~s~% *current-lap-assembly*=~s~%")
+	      lambda-expression name *current-codevec* *current-disassembly*
+	      *current-lap-assembly*))))
+
+
+
+
+;; works only on closure objects
+(sys::closure-name #'my-plus-1)
+
+(sys::closure-codevec #'my-plus-1)
+
+
+(let ((x 123) (y 456))
+  (defun my-plus-2 (z) (declare (compile)) (+ x y z)))
+
+(sys::closure-consts #'my-plus-2)
+
+
+(multiple-value-bind (req-num opt-num rest-p key-p keyword-list
+                      allow-other-keys-p byte-list const-list)
+    (sys::signature #'my-plus-1)
+  (sys::disassemble-LAP byte-list const-list))
+
+;; (sys::assemble-LAP (mapcar #'rest *))
+
+
+(sys::assemble-LAP
+ (mapcar #'rest
+	 '((0 LOAD&PUSH 2) (1 LOAD&PUSH 2) (2 CALLSR 2 53) (5 SKIP&RET 3))))

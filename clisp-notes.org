@@ -6,13 +6,519 @@
 
 ** Memory
 
+*** Specifications for the Evaluator
+
+    EVALBIBL for EVAL.D
+
+
+**** SUBRs and FSUBRs
+
+They're constructed through
+  LISPFUN             for general LISP-functions,
+  LISPFUNN            for normal  LISP-functions (only required parameters),
+  LISPSPECFORM        for special forms (FSUBRs).
+
+Note that SUBRs with KEY_COUNT=0 will be seen as SUBRs without
+keyword- parameters by the evaluator (which in consequence means that
+in this case the ALLOW_FLAG is meaningless and no keyword, not even
+:ALLOW-OTHER-KEYS, will be accepted)!
+
+**** Values
+
+
+The following format is used for the passing of multiple values:
+value1 contains the first value (NIL if there aren't values).
+
+mv_count contains the number of values.
+If there is at least one value       : value1 = first value.
+If there are at least two values     : value2 = second value.
+If there are at least three values   : value3 = third value .
+All values are in mv_space.
+
+Recommended commands for returning of values to the caller:
+  0 values:   VALUES0;
+  1 value :     VALUES1(...);
+  2 values:   value1=...; value2=...; mv_count=2;
+  3 values:   value1=...; value2=...; value3=...; mv_count=3;
+  more than 3 values:
+              if (number of values >= mv_limit) goto error_too_many_values;
+              Put the values one after another onto the STACK
+              STACK_to_mv(number of values);
+
+**** Passing of parameters to SUBRs
+
+The arguments are passed on the LISP-stack, with the first one being on the
+top. The required arguments come first, then the optional ones
+(each #UNBOUND, if not specified), then come the
+keyword-arguments (again, each #UNBOUND, if not specified).
+The SUBR-object can be found in back_trace.
+This is all if no &REST-argument is planned. But if a &REST-argument
+is planned, all further arguments follow (the optional ones) on the stack
+one by one, and this will be passed: the number of these arguments and a pointer
+above the first of these arguments. (This means that the number of LISP-objects on
+the stack is not always the same!)
+All arguments have to be removed from the LISP-stack at the return jump.
+(for example. for SUBRs with &REST: the stackpointer STACK has to have the value
+args_pointer = rest_args_pointer STACKop (fixed number of arguments)
+= pointer above the very first argument), and mv_count/mv_space
+has to hold the values.
+
+Passing of parameters to FSUBRs
+===============================
+
+The parameters are passed on the LISP-stack with the first one being on top.
+At first there are the required parametes, followed by the optional ones
+(#UNBOUND, if not specifired), then - if body-flag true -
+the whole rest of the body (most of the time a list).
+So the number of objects on the LISP-stack is always the same, namely
+numReqParameter + numOptParameter + (0 or 1 if body-flag).
+At the call, back_trace holds the FSUBR-object, and the whole form is
+in the EVAL-frame, directly above the parameters.
+All parameters have to be removed from the LISP-stack at the return jump
+(ie. the stackpointer STACK has to be incemented by the number of objects),
+and mv_count/mv_space has to hold the values.
+
+Environments
+============
+
+General
+-------
+The lexical environment is separated into 5 components:
+  - the variables-environment (VAR_ENV),
+  - the functions- and macro-environment (FUN_ENV),
+  - the block-environment (BLOCK_ENV),
+  - the tagbody-environment (GO_ENV),
+  - the declarations-environment (DECL_ENV).
+The environment is kept in 5 "global variables". They are dynamically bound
+with special frames on change.
+A single functions- and macro environment is passed to SYM_FUNCTION,
+MACROEXP, MACROEXP0, PARSE_DD.
+GET_CLOSURE expects a pointer to all environments en bloc: A3 with
+VAR_(A3)=VAR_ENV, FUN_(A3)=FUN_ENV, BLOCK_(A3)=BLOCK_ENV, GO_(A3)=GO_ENV,
+DECL_(A3)=DECL_ENV.
+
+The variables-environment
+-------------------------
+It contains the local variable-bindings.
+A variables-enviroment is given through a pointer to a
+variable-binding frame, or NIL  (which means an empty lexical
+environment) or a vector that is built as follows:
+The vector contains n bindings and has the length 2n+1. The elements are
+n-times each variable (a symbol) and  the value that belongs to it ("value" can
+be #<SPECDECL> as well, and then the variable has to be referenced dynamically,
+or it can be #<IMPLEMENTATION-DEPENDENT>, then a warning is emitted during
+lookup) and as last element the predecessor environment.
+
+The functions- and macro-environment
+------------------------------------
+It contains the local function- and macro-definitions.
+A functions- and macro-environment is given through a pointer to
+a functions- or macrobindings-frame or NIL (which means an empty
+lexical environment) or through a vector that is built as follows:
+The vector contains n bindings and has length 2n+1. The elements are
+n-time each function-name (a symbol) and the definiton that belongs to it (a
+closure or NIL or a SYS::MACRO object) and as last element
+the predecessor environment.
+
+The block-environment
+---------------------
+It contains the lexically visible block-exitpoints.
+A block-environment is given through a pointer to a block-frame
+or through an association-list, whose elements each have the block-name (a symbol)
+as CAR and as CDR either the pointer to the appropriate
+frame or #DISABLED, if the block has already been left.
+
+The tagbody-environment
+-----------------------
+It contains the lexically visible Go-labels of the tagbodies.
+A tagbody-environment is given through a pointer to a
+tagbody-frame or an associations-list, whose elements have a vector (with the
+Go-tags as elements) as CAR and as CDR either the pointer to the
+related frame or #DISABLED, if the tagbody has already
+been left.
+
+The declarations-environment
+----------------------------
+It contains the lexically visible declarations.
+A declarations-environment is given through a list of declaration-
+specifiers, whose CAR is each either OPTIMIZE or DECLARATION or
+a user-specified declaration-type.
+
+Passing of environtments to LISP-functions
+------------------------------------------
+There are two data structures for this:
+When it is passed as second argument to macro-expander-functions (CLTL p.
+145-146) and when it is receipted by MACROEXPAND and MACROEXPAND-1 (CLTL p. 151)
+it is simply a Simple-Vector with 2 elements, consisting of a nested
+variable-environment and a nested functions- and macro-environment.
+The same for passing to  SYSTEM::%EXPAND-LAMBDABODY-MAIN and the like.
+If it is passed as second argument to the value of *EVALHOOK* or as third one
+to the value of *APPLYHOOK* (CLTL p. 322) and on reception by
+EVALHOOK and APPLYHOOK (CLTL p. 323) it is a Simple-Vector with
+five elements with all five components nested.
+
+Frames
+======
+Frames are not used to call SUBRs, FSUBRs and compiled closures.
+
+There are the following 14 kinds of frames:
+  - Environmentbinding-Frame (ENV_FRAME),
+  - APPLY-frame (APPLY_FRAME),
+  - EVAL-frame (EVAL_FRAME),
+  - dynamic variable-bindings-frame (DYNBIND_FRAME),
+  - Variable-bindings-frame (VAR_FRAME),
+  - Function- or Macrobindings-Frame (FUN_FRAME),
+  - interpreted block-frame (IBLOCK_FRAME),
+  - compiled block-frame (CBLOCK_FRAME),
+  - interpreted tagbody-frame (ITAGBODY_FRAME),
+  - compiled tagbody-frame (CTAGBODY_FRAME),
+  - Catch-Frame (CATCH_FRAME),
+  - Unwind-Protect-frame (UNWIND_PROTECT_FRAME),
+  - Handler-frame (HANDLER_FRAME),
+  - C-Handler-frame (C_HANDLER_FRAME),
+  - Driver-frame (DRIVER_FRAME).
+Right at the bottom of a frame there is a long-word, that contains the
+frame-type information and a pointer above the frame (= the value of the
+STACK before and after the frame has been built).
+In the frame-info there are the bits
+  SKIP2_BIT      deleted, if another long-word comes above it,
+                   that is not a LISP-object and thus has to be skipped
+                   by the GC,
+  EXITPOINT_BIT  set for all but VAR and FUN,
+  NESTED_BIT     set for IBLOCK and ITAGBODY, if the exitpoint or
+                   the Go-label has already been put into an Alist.
+The default-values for  the frame-type info-bytes are ENVxx_FRAME_INFO,
+APPLY_FRAME_INFO, EVAL_FRAME_INFO, VAR_FRAME_INFO, FUN_FRAME_INFO,
+IBLOCK_FRAME_INFO, CBLOCK_FRAME_INFO, ITAGBODY_FRAME_INFO, CTAGBODY_FRAME_INFO,
+CATCH_FRAME_INFO, UNWIND_PROTECT_FRAME_INFO, DRIVER_FRAME_INFO.
+The routine that is in (SP).L with SP=SP_(STACK) (for IBLOCK-, CBLOCK-,
+ITAGBODY-, CTAGBODY-, CATCH-, UNWIND-PROTECT-frames), is being
+jumped to by MOVE.L SP_(STACK),SP ! RTS  .
+For DRIVER-frames by MOVE.L SP_(STACK),SP ! MOVE.L (SP),-(SP) ! RTS  .
+In the portable C-version in SP_(STACK) there is a pointer to a
+setjmp/longjmp-buffer.
+
+Environmentbindings-frames
+--------------------------
+They contain dynamic bindings of a maximum of 5 environments.
+ENVxx_FRAME_INFO  is frame-info (xx depending on the environment that is
+bound here). Structure:
+    Offset        Stack-Contents
+  20/16/12/8/4  [old value ofDECL_ENV]
+  16/12/8/4     [old value ofGO_ENV]
+  12/8/4        [old value ofBLOCK_ENV]
+  8/4           [old value ofFUN_ENV]
+  4             [old value ofVAR_ENV]
+  0             Frame-Info; pointer above frame
+
+ENV1V_frame    for 1 VAR_ENV
+ENV1F_frame    for 1 FUN_ENV
+ENV1B_frame    for 1 BLOCK_ENV
+ENV1G_frame    for 1 GO_ENV
+ENV1D_frame    for 1 DECL_ENV
+ENV2VD_frame   for 1 VAR_ENV and 1 DECL_ENV
+ENV5_frame     for all 5 environments
+
+APPLY-frames
+------------
+They are created at every call (APPLY or FUNCALL) of an interpreted
+closure.
+Structure:
+  Offset     Stack-contents
+  4n+12
+  4n+8      Argument 1
+  ...
+  12        Argument n
+  8         Function that is being called
+  4         SP
+  0         Frame-info; pointer above frame
+SP is a pointer into the program-stack. Jumping back to (SP).L after dissolving
+the APPLY-fame returns the contents of A0/... as values of the form.
+The frame-info has the value APPLY_FRAME_INFO or TRAPPED_APPLY_FRAME_INFO.
+
+EVAL-frames
+-----------
+They are created for every call of the EVAL-procedure.
+Layout:
+  Offset     Stack-content
+  8         Form that is being evaluated
+  4         SP
+  0         Frame-info; pointer above frame
+SP is a pointer into the program stack. Jumping back to (SP).L after dissolving
+the EVAL-frame returns the contents of A0/... as values of the form.
+The frame-info has the value EVAL_FRAME_INFO or TRAPPED_EVAL_FRAME_INFO.
+
+Dynamic variable-bindings frames
+-----------------------------------
+They bind symbols to values dynamically.
+The structure of such a frame with n bindings is as follows::
+  Offset  stack contents
+  8n+4
+  8n      value 1
+  8n-4    symbol 1
+  ...     ...
+  8       value n
+  4       symbol n
+  0       frame-info; pointer above frame
+The content of the frameinfo-byte is DYNBIND_FRAME_INFO.
+
+Variable-bindings-frames
+------------------------
+They are created when interpreted closures are being used (for the variable
+bindings specified in the Lambda-list and in the dynamic references that might
+be specified in the declarations) and by LET and LET*, as well as by all
+constructs, that use LET or LET* implicitly (such as DO, DO*, PROG, PROG*,
+DOLIST, DOTIMES, ...).
+The structure of a variable-bindings-frame with n bindings is as follows:
+#ifndef NO_symbolflags
+  Offset  stack contents
+  12+8n
+  8+8n    value 1
+  4+8n    symbol 1
+  ...     ...
+  16      value n
+  12      symbol n
+  8       NEXT_ENV
+  4       m
+  0       frame-info; pointer above frame
+#else
+  Offset  stack contents
+  12+12n
+  8+12n   value 1
+  4+12n   symbol 1
+  12n     marker bits 1
+  ...     ...
+  20      value n
+  16      symbol n
+  12      marker bits n
+  8       NEXT_ENV
+  4       m
+  0       frame-info; pointer above frame
+#endif
+The symbol/value-pairs are numbered and stored in the order in which the
+bindings become active (i.e. for interpreted closures: at first the dynamic
+references (SPECIAL-declarations), then the required-parameters, then the
+optional parameters, then the remaining parameters, then the keyword
+parameters, then the AUX-variables).
+The symbols contain the following marker bits on the stack: ACTIVE_BIT, is
+set, if the binding is active, DYNAM_BIT is set, if the binding is
+dynamic. (Dynamic references are marked as lexical with
+the special value #<SPECDECL>!).
+NEXT_ENV is next upper variables-environment.
+m is a long-word, 0 <= m <= n, and stands for the number of bindings that
+have not yet been put into a vector by NEST-operations. Thus
+the symbol/value-pairs 1,...,n-m have been active but been nested meanwhile
+and thus inactive again on the stack (if the bindings were static).
+Only some of the pairs n-m+1,...,n can be static and active.
+The frameinfo-byte contains VAR_FRAME_INFO.
+
+Function- and Macrobindings-Frames
+-----------------------------------
+They are created by FLET and MACROLET.
+The structure of a variable-bindings-frame with n bindings is as follows:
+  Offset  stack contents
+  12+8n
+  8+8n    value 1
+  4+8n    symbol 1
+  ...     ...
+  16      value n
+  12      symbol n
+  8       NEXT_ENV
+  4       m
+  0       Frame-Info; pointer above frame
+NEXT_ENV is the next higher function-environment.
+m is a long word, 0 <= m <= n, and stands for the number of bindings, that
+have not yet been put into a vector by NEST-operations. So the
+symbol/value pais 1,...,n-m have been active, but nested meanwhile and thus
+inactive on the stack again. Only the pairs n-m+1,...,n are active.
+Marker bits are not needed here, as opposed to the variable-bindings frames
+
+All values are closures or SYS::MACRO objects.
+The content of the Frameinfo-bytes is FUN_FRAME_INFO.
+
+Interpreted Block-Frames
+------------------------
+They are created by BLOCK and all constructs that contain an implicit
+BLOCK (e.g. DO, DO*, LOOP, PROG, PROG*, ...). The structure is as follows:
+  Offset  stack contents
+  16
+  12       NAME
+  8        NEXT_ENV
+  4        SP
+  0        Frame-Info; pointer above frame
+NAME is the name of the block. NEXT_ENV is the next higher Block-Environment.
+SP is a pointer into the program stack, (SP).L is a routine, that unwinds the
+Block-Frame and leaves the block with the values A0-A2/...
+Frame-Info is IBLOCK_FRAME_INFO, possibly with set NESTED_BIT (then NEXT_ENV
+points to an Alist, whose first element is the pair (NAME . <Framepointer>),
+because the block is not DISABLED yet).
+
+Compiled Block-Frames
+---------------------
+Structure:
+  Offset  stack contents
+   12
+   8        Cons (NAME . <Framepointer>)
+   4        SP
+   0        Frame-Info; pointer above frame
+NAME is the name of the block.
+SP is a pointer into the program stack, (SP).L is a routine, that
+unwinds the Block-Frame and leaves the block with the values A0-A2/...
+Frame-Info is CBLOCK_FRAME_INFO.
+
+Interpreted Tagbody-Frames
+--------------------------
+They are created by TAGBODY and all constructs that contain an implicit
+TAGBODY (e.g. DO, DO*, PROG, PROG*, ...).
+The structure of a Tagbody-Frames with n tags is as follows:
+  Offset  stack contents
+  12+8n
+  8+8n     BODY 1
+  4+8n     TAG 1
+  ...      ...
+  16       BODY n
+  12       TAG n
+  8        NEXT_ENV
+  4        SP
+  0        Frame-Info; pointer above frame
+The tags are the jump destinations ; they are symbols and Integers, that are in
+the Body. The corresponding "value" BODY i contains the part of the body
+that follows TAG i. NEXT_ENV is the next higher Tagbody-Environment.
+SP is a pointer into the program stack, (SP).L is a routine, that executes
+the action (GO TAGi), if it is jumped to with BODYi in A0.
+Frame-Info is ITAGBODY_FRAME_INFO, poss. with set NESTED_BIT (then
+NEXT_ENV points to an Alist, whose first element has the form
+(#(TAG1 ... TAGn) . <Framepointer>), because the Tagbody is not
+DISABLED yet).
+
+Compiled Tagbody-Frames
+-----------------------
+Structure:
+  Offset  stack contents
+   12
+   8        Cons (#(TAG1 ... TAGn) . <Framepointer>)
+   4        SP
+   0        Frame-Info; above frame
+TAG1, ..., TAGn are the names of the tags (actually only contained in
+the compiled code to create error messages).
+SP is a pointer into the program stack, (SP).L is a routine, that executes
+the action (GO TAGi), if it has been jumped at with value1 = i (1 <= i <= n)
+
+Frame-Info is CTAGBODY_FRAME_INFO.
+
+Catch-Frames
+------------
+They are created by the  Special-Form CATCH. Its structure is as follows:
+  Offset  stack contents
+   12
+   8        TAG
+   4        SP
+   0        Frame-Info; pointer above frame
+TAG is the tag of the catcher.
+SP is a pointer into the program stack, (SP).L is a routine, that unwinds
+the Frame and returns the values A0-A2/...
+Frame-Info is CATCH_FRAME_INFO.
+
+Unwind-Protect-Frames
+---------------------
+They are created by the Special-Form UNWIND-PROTECT and all constructs
+that contain an implicit UNWIND-PROTECT (like WITH-OPEN-STREAM or
+WITH-OPEN-FILE). Their structure is as follows:
+  Offset  Stack-contents
+   8
+   4        SP
+   0        Frame-Info; pointer above frame
+SP is a pointer into the program stack. (SP).L a routine, that unwinds the
+Frame,saves the current values A0-A2/...  executes the cleanup,
+writes the saved values back and finally jumps to the address
+(with RTS), that has been entered into the program stack in place of their own
+and leaves D6 unchanged.
+
+Handler-Frames
+--------------
+They are created by the macro HANDLER-BIND. Their structure is as follows:
+  Offset  Stack-contens
+   16
+   12       Cons (#(type1 label1 ... typem labelm) . SPdepth)
+   8        Closure
+   4        SP
+   0        Frame-Info; pointer above frame
+SP is a pointer into the program stack.
+If there is a condition of the type typei
+the closure starting at Byte labeli is interpreted as Handler, where at first
+a piece of the program stack with the length SPdepth  is duplicated.
+
+C-Handler-Frames
+----------------
+This is a variant of Handler-Frames, which calls a C handler:
+  Offset  Stack-contents
+   16
+   12       Cons (#(type1 label1 ... typem labelm))
+   8        Handler-function
+   4        SP
+   0        Frame-Info; pointer above frame
+SP is a pointer into the program stack.
+If there is a condition of the type typei
+the handler-function is called with the arguments SP
+(arbitrary pointer into the C-Stack, or NULL), frame (pointer above the frame),
+labeli (arbitrary Lisp-object), condition.
+If the Handler wants to yield control via unwind_upto(FRAME) by itself,
+the Frame has to be created with finish_entry_frame.
+
+Driver-Frames
+-------------
+They are created upon entry into a top-level loop (most of the time
+a READ-EVAL-PRINT-loop) and are used to continue the previous top-level
+loop after an error message. The structure is simple
+  Offset  Stack-contens
+   8
+   4        SP
+   0        Frame-Info; pointer above Frame
+SP is a pointer into the program stack. (SP).L is a routine, that
+re-enters the corresponding top-level loop.
+
+ STACK:
+ ------
+ STACK is the LISP-Stack.
+ STACK_0 is the first object on the STACK.
+ STACK_1 is the second object on the STACK.
+ etc., generally STACK_(n) = (n+1)th object on the STACK.
+ pushSTACK(object)  puts an object onto the Stack. Synonym: -(STACK).
+ popSTACK()  returns STACK_0 and removes it from the stack.
+ skipSTACK(n);  removes n objects from the STACK.
+ If you want to save the value of the stack, you do this:
+   var gcv_object_t* temp = STACK; ... (no access through temp !) ... setSTACK(STACK = temp);
+   but: access through STACKpointable(temp)  is possible.
+ If you want a pointer that can traverse through the Stack, you do this:
+   var gcv_object_t* ptr = &STACK_0;  or = STACKpointable(STACK);
+   assert( *(ptr STACKop 0) == STACK_0 );
+   assert( *(ptr STACKop 1) == STACK_1 );
+   ...
+   ptr skipSTACKop n;
+   assert( *(ptr STACKop 0) == STACK_(n) );
+   ...
+   This pointer must not be assigned to the STACK again!
+ If you store blocks of objects on the STACK and want to get the (n+1)-th block,
+   you do this:  STACKblock_(type,n). type should be a
+   struct-type with sizeof(type) a multiple of sizeof(gcv_object_t). */
+
+
 *** Stack
 
-    - The stack is defined in spvw.d:
+    - The Lisp Stack is defined in spvw.d:
       #+BEGIN_SRC d
       modexp gcv_object_t* STACK;
-      #+END_SRC 
-      
+      #+END_SRC
+
+    - The C Stack is define in lispbibl.d
+      #+BEGIN_SRC d
+	#define SP()							 \
+	  ({var aint __SP;                                               \
+		__asm__ __volatile__ ("movl %%esp,%0" : "=g" (__SP) : ); \
+		__SP;                                                    \
+	  })
+      #+END_SRC
+
     - There is explicitly space for multiple values stored in:
       #+BEGIN_SRC d
       modexp uintC mv_count;
@@ -24,3 +530,34 @@
 		    arrayeltype arrayvar[arraysize]
       #+END_SRC
 
+** Evaluation of compiled functions
+
+
+*** [D] global maygc Values eval_no_hooks (object form)
+     More correct form of eval since it ignore non-ansi *evalhook* &
+     *applyhook*
+     
+**** build eval-frame
+     - The callee needed to access its incoming arguments. This is
+       ordinarily do by accessing the last elements of the coller's STACK.
+     - Steps
+       1. Push lisp form to STACK
+       2. Configure setjmp (before)
+	  a. end_system_call()
+ 	  b. STACK_0 = framebottomword(frametype##_frame_info,top_of_frame,STACK)
+             Note that top_of_frame is the top of the STACK
+       3. Configure setjmp (after)
+	  a. end_system_call()
+	  b. LONGJMP_RESTORE_mv_count()
+	  c. LONGJMP_RESTORE_value1()
+	  d. reentry_statement
+
+
+
+
+
+
+
+
+**** [D] local maygc Values eval1 (object form)
+     

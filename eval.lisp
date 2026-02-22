@@ -816,7 +816,10 @@ on the LISP-Stack"
 ;; (STORE n)
 ;; 0 &le; n &lt; 8
 
-
+(defun test-interpret-bytecode ()
+  (let ((test1 '((0 NIL) (1 SYSTEM::SKIP&RET 1))) ;; (lambda () (declare (compile)) nil)
+	(codevec #(0 0 0 0 0 0 0 0 32 1 0 25 1)))
+    (interpret-bytecode nil codevec)))
 
 
 (defun interpret-bytecode (closureptr code)
