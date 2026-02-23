@@ -560,6 +560,24 @@ If you store blocks of objects on the STACK and want to get the (n+1)-th block,
 
 ** Evaluation of compiled functions
 
+*** CALL2-style example
+    #+BEGIN_SRC lisp
+      (defun my-plus-1 (x y)
+	(declare (compile))
+	(+ x y))
+
+      (defun my-plus-2 (x y)
+	(declare (compile))
+	(my-plus-1 x y))
+    #+END_SRC
+    
+    LAP code:
+    #+BEGIN_SRC lisp
+      ((0 LOAD&PUSH 2) (1 LOAD&PUSH 2) (2 CALL2 0) (4 SKIP&RET 3))
+    #+END_SRC
+
+*** 
+** Evaluation of interpreted functions
 
 *** [D] global maygc Values eval_no_hooks (object form)
      More correct form of eval since it ignore non-ansi *evalhook* &
@@ -580,12 +598,9 @@ If you store blocks of objects on the STACK and want to get the (n+1)-th block,
 	  c. LONGJMP_RESTORE_value1()
 	  d. reentry_statement
 
-
-
-
-
-
-
-
 **** [D] local maygc Values eval1 (object form)
      
+** Buffels etc.
+
+   *sldb clisp/0*
+   *slime-repl clisp*
